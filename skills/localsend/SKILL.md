@@ -89,8 +89,9 @@ false positive.
 
 ## Etiquette
 
-- Never edit the vendored copy in place to fix a transfer bug. Fix it in
-  `CovertJaguar/localsend-cli`, then
+- Never edit the vendored copy in place to fix a transfer bug. Fix it in the
+  upstream CLI repo you vendor from (ours:
+  `CovertJaguar/localsend-cli`), then
   `git subtree pull --prefix skills/localsend/vendor/localsend-cli ...`.
 - Do not leave a receiver running with `-y` for longer than the transfer needs;
   it accepts from anyone who can reach the port.
