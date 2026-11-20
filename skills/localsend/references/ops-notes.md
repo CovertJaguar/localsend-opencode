@@ -80,6 +80,28 @@ port is still open before asking anyone to retry.
 - Windows treats an unknown network as Public and blocks inbound by default.
 - Send by IP address to bypass discovery entirely.
 
+## Symptom: "is it done?" has no reliable answer
+
+Watching the save folder cannot answer it. A finished batch and a stalled one
+look identical once nothing has been written for a while, and the gap between
+files in a batch is unbounded: multi-gigabyte files, throttled phones, AP
+retries and disk stalls all produce silences longer than any debounce, while a
+crashed sender produces one that never ends. mtime-debounce watchers therefore
+truncate big batches and call dead transfers complete.
+
+The protocol already answers it. `prepare-upload` carries the whole manifest,
+and the receiver prints `All N file(s) received` only when the last expected
+file has landed. `--event-log` writes that same fact as JSON Lines — announced
+size, bytes written, SHA-256 and an `ok` flag per file — and `--on-complete`
+runs a command per finished session. Both are plain files and subprocesses, so
+they behave identically on Windows, macOS and Linux, unlike inotify or
+ReadDirectoryChangesW watchers.
+
+The CLI line-buffers its own stdout, so tailing the log is not stuck behind a
+block buffer. Parsing that text is still coupled to its wording, and it still
+cannot tell a paused session from an abandoned one — key off
+`session_complete`, not off silence.
+
 ## Wrong diagnosis to avoid
 
 A patcher, a log line, or a mentioned mod name is not proof of cause. In this

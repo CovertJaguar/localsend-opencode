@@ -43,12 +43,16 @@ Run this in the background, because it blocks:
 
 ```sh
 python3 vendor/localsend-cli/localsend-cli --alias "$(hostname)" receive -y \
-  --save-dir ~/Downloads/localsend
+  --save-dir ~/Downloads/localsend \
+  --event-log ~/Downloads/localsend/.events.jsonl
 ```
 
 - `-y` auto-accepts every transfer. Without it the CLI prompts, which is
   unusable when nobody is at the machine.
 - `--alias` must come **before** the subcommand.
+- `--event-log` appends JSONL progress; `--on-complete CMD` runs a shell
+  command per finished session. Both are plain files and subprocesses, so the
+  signal is identical on Windows, macOS and Linux.
 - Confirm it is listening before telling the user to send:
 
 ```sh
@@ -61,6 +65,30 @@ process, do not ask the user to retry.
 
 State the exact destination when handing off: device alias, IP and port,
 protocol `https`, and where files will land.
+
+## Wait for it to land
+
+Do not poll the save folder. A folder that stops changing looks the same
+whether the batch finished or the sender stalled mid-file, and no timeout
+separates the two — a 2 GB file on slow Wi-Fi can sit still longer than any
+sensible debounce. The receiver is handed the manifest before the first byte
+arrives and records `session_complete` only once the last expected file has
+landed, so block on that record instead:
+
+```sh
+python3 scripts/wait-transfer.py \
+  --event-log ~/Downloads/localsend/.events.jsonl --timeout 900
+```
+
+Run it in the background so its exit resumes you. It prints one line per file
+with the SHA-256, compares every saved size against the announced one, and
+exits `0` when all match, `2` when a file is short or missing (the classic
+zero-byte false positive), `124` on timeout.
+
+For unattended machines, `--on-complete` takes any shell command —
+`notify-send`, `osascript -e 'display notification'`, `msg`, or a webhook. It
+runs with `LOCALSEND_OK`, `LOCALSEND_REPORT` (path to a JSON report),
+`LOCALSEND_SESSION` and `LOCALSEND_SAVE_DIR` in the environment.
 
 ## Send
 
@@ -76,7 +104,9 @@ side — if the receiver is a person, they must click Accept.
 
 ## Verify
 
-A transfer is not done because the command exited cleanly. Check the file:
+A transfer is not done because the command exited cleanly. With `--event-log`
+the records already carry `sha256`, `bytes`, `declared_bytes` and `ok` per
+file; trust `ok`, not the sender's `200`. Without an event log, check by hand:
 
 ```sh
 ls -l ~/Downloads/localsend
@@ -85,7 +115,7 @@ sha256sum ~/Downloads/localsend/<file>
 
 Zero-byte files mean the receiver could not read the request body; see
 `references/ops-notes.md`. An empty file that "succeeded" is the most common
-false positive.
+false positive, and the event log reports it as `ok: false`.
 
 ## Etiquette
 
