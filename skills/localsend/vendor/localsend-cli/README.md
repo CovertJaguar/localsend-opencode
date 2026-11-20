@@ -85,6 +85,30 @@ localsend-cli --alias "My Server" receive -y --save-dir ~/incoming
 
 Press `Ctrl+C` to stop the receiver.
 
+### Knowing when a transfer finished
+
+The receiver is handed the whole manifest before the first byte arrives, so it
+knows exactly when the last expected file has landed. It will say so on stdout,
+and can also tell your tooling:
+
+```bash
+localsend-cli receive -y --save-dir ~/incoming \
+  --event-log ~/incoming/.events.jsonl \
+  --on-complete 'notify-send "transfer done"'
+
+# Block until the next transfer finishes, then print a verified verdict
+python3 wait-transfer.py --event-log ~/incoming/.events.jsonl --timeout 900
+```
+
+`--event-log` appends one JSON object per line (`session_start`, `file_saved`,
+`session_complete`), with the announced size, the bytes actually written, a
+SHA-256, and an `ok` flag per file. `--on-complete` runs a shell command after
+each session with `LOCALSEND_OK`, `LOCALSEND_REPORT` (a JSON report file),
+`LOCALSEND_SESSION` and `LOCALSEND_SAVE_DIR` in the environment.
+
+Both are plain files and subprocesses — no platform-specific plumbing — so they
+behave the same on Windows, macOS and Linux.
+
 ## Flags
 
 | Flag | Scope | Description |
@@ -95,6 +119,8 @@ Press `Ctrl+C` to stop the receiver.
 | `--json` | `discover` | Machine-readable JSON output |
 | `--save-dir DIR` | `receive` | Where to save received files (default: `~/Downloads`) |
 | `-y` | `receive` | Auto-accept all incoming transfers |
+| `--event-log PATH` | `receive` | Append JSONL progress and completion records to PATH |
+| `--on-complete CMD` | `receive` | Shell command to run after each finished transfer |
 
 > **Note:** `--alias` is a global flag and MUST come before the subcommand:
 > ```bash
