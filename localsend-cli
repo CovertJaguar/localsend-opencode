@@ -6,6 +6,7 @@ sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
 
 import argparse
+import atexit
 import hashlib
 import http.server
 import json
@@ -13,6 +14,7 @@ import mimetypes
 import os
 import platform
 import select
+import shutil
 import socket
 import ssl
 import struct
@@ -35,6 +37,9 @@ CHUNK = 65536
 def _generate_self_signed_cert():
     """Generate a self-signed cert+key using openssl, return (certfile, keyfile, fingerprint)."""
     tmpdir = tempfile.mkdtemp(prefix="localsend-cli-")
+    # Throwaway identity: a fresh cert per process. Remove it on exit so Temp
+    # does not accumulate one unencrypted private key per run.
+    atexit.register(shutil.rmtree, tmpdir, True)
     keyfile = os.path.join(tmpdir, "key.pem")
     certfile = os.path.join(tmpdir, "cert.pem")
     subprocess.run(
