@@ -28,6 +28,21 @@ A receiver that only serves `/v2/...` answers `404 page not found`.
 Modern implementations also need `POST /api/localsend/v2/register`; without it,
 HTTP-scan discovery (what Android relies on) silently omits the receiver.
 
+## Symptom: `TLSV13_ALERT_CERTIFICATE_REQUIRED` on send
+
+The receiver wants mutual TLS and the sender presented no client certificate.
+LocalSend 2.1+ receivers request one during the handshake; a client that only
+verifies the server's self-signed certificate gets this alert instead of an
+HTTP status, so nothing appears in the receiver's transfer log — the connection
+dies before `/prepare-upload`.
+
+The sender's certificate is the same self-signed one it already generates at
+startup, and its fingerprint is what goes in `info.fingerprint`, so presenting
+it is all that is needed: load the cert chain into the client SSL context for
+the prepare-upload and upload requests. Sending without it works against older
+receivers and fails against current ones, which makes this look like a
+per-device problem rather than a protocol mismatch.
+
 ## Symptom: `error decoding response body ... expected value at line 1 column 1`
 
 The `/register` reply was not JSON. Clients decode that response into a device
