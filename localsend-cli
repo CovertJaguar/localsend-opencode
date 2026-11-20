@@ -423,6 +423,74 @@ def cmd_send(args):
 # receive command — HTTPS server
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Session reporting — a cross-platform completion signal
+# ---------------------------------------------------------------------------
+
+def _sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(CHUNK * 16)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+class SessionReporter:
+    """Record transfer progress as JSON lines and run an optional hook.
+
+    The receiver is handed the full manifest before the first byte arrives and
+    knows when the last expected file has landed, so completion is a protocol
+    fact rather than something to infer. Emitting it here means callers never
+    have to poll the save folder — which cannot tell a finished batch from a
+    stalled one — and the same code path works on Windows, macOS and Linux.
+    """
+
+    def __init__(self, event_log=None, on_complete=None):
+        self.event_log = os.path.expanduser(event_log) if event_log else None
+        self.on_complete = on_complete
+        if self.event_log:
+            parent = os.path.dirname(os.path.abspath(self.event_log))
+            os.makedirs(parent, exist_ok=True)
+
+    def emit(self, event, **fields):
+        record = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "event": event,
+        }
+        record.update(fields)
+        if self.event_log:
+            with open(self.event_log, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+        return record
+
+    def session_end(self, record):
+        self.emit("session_complete", **record)
+        if not self.on_complete:
+            return
+        env = dict(os.environ)
+        env["LOCALSEND_OK"] = "1" if record.get("ok") else "0"
+        env["LOCALSEND_SESSION"] = record.get("session") or ""
+        env["LOCALSEND_SAVE_DIR"] = record.get("save_dir") or ""
+        env["LOCALSEND_REPORT"] = ""
+        if self.event_log:
+            report = os.path.abspath(self.event_log) + ".report.json"
+            try:
+                with open(report, "w", encoding="utf-8") as f:
+                    json.dump({"event": "session_complete", **record}, f, indent=2)
+                env["LOCALSEND_REPORT"] = report
+            except OSError as e:
+                print(f"  Could not write report file: {e}")
+        try:
+            subprocess.Popen(self.on_complete, shell=True, env=env)
+        except OSError as e:
+            print(f"  Completion hook failed to start: {e}")
+
+
 class ReceiveHandler(http.server.BaseHTTPRequestHandler):
     """Handle incoming LocalSend v2 requests."""
 
@@ -520,9 +588,16 @@ class ReceiveHandler(http.server.BaseHTTPRequestHandler):
 
         if path in ("/api/localsend/v2/cancel", "/api/localsend/v1/cancel"):
             with self.server.ls_lock:
+                session_id = self.server.ls_session
+                sender = self.server.ls_session_sender
                 self.server.ls_session = None
                 self.server.ls_file_tokens = {}
                 self.server.ls_file_meta = {}
+                self.server.ls_session_files = []
+            self.server.ls_reporter.emit(
+                "session_cancelled", session=session_id,
+                sender=sender, address=self.client_address[0],
+            )
             print("\nTransfer cancelled by sender.")
             self._send_text(200)
             return
@@ -537,6 +612,10 @@ class ReceiveHandler(http.server.BaseHTTPRequestHandler):
 
         with self.server.ls_lock:
             if self.server.ls_session is not None:
+                self.server.ls_reporter.emit(
+                    "session_busy", sender=sender_name,
+                    address=self.client_address[0], count=len(files),
+                )
                 self._send_text(409, "Busy")
                 return
 
@@ -551,10 +630,20 @@ class ReceiveHandler(http.server.BaseHTTPRequestHandler):
             try:
                 ans = input("Accept? [Y/n] ").strip().lower()
                 if ans and ans != "y":
+                    self.server.ls_reporter.emit(
+                        "session_declined", sender=sender_name,
+                        address=self.client_address[0], count=len(files),
+                        total_bytes=total_size,
+                    )
                     self._send_json(403, {"message": "Declined"})
                     print("Declined.")
                     return
             except EOFError:
+                self.server.ls_reporter.emit(
+                    "session_declined", sender=sender_name,
+                    address=self.client_address[0], count=len(files),
+                    total_bytes=total_size,
+                )
                 self._send_json(403, {"message": "Declined"})
                 return
 
@@ -570,6 +659,10 @@ class ReceiveHandler(http.server.BaseHTTPRequestHandler):
             self.server.ls_file_meta = dict(files)
             self.server.ls_received_count = 0
             self.server.ls_expected_count = len(files)
+            self.server.ls_session_started = time.time()
+            self.server.ls_session_files = []
+            self.server.ls_session_sender = sender_name
+            self.server.ls_declared_total = total_size
 
         is_v2 = "v2" in path
         if is_v2:
@@ -578,6 +671,13 @@ class ReceiveHandler(http.server.BaseHTTPRequestHandler):
             # v1 response: flat map of fileId -> token
             self._send_json(200, file_tokens)
 
+        self.server.ls_reporter.emit(
+            "session_start", session=session_id, sender=sender_name,
+            address=self.client_address[0], save_dir=self.server.ls_save_dir,
+            count=len(files), total_bytes=total_size,
+            files=[{"name": m.get("fileName", fid), "bytes": m.get("size", 0)}
+                   for fid, m in files.items()],
+        )
         print("Accepted. Waiting for files...")
 
     def _handle_upload(self, path, qs):
@@ -616,19 +716,60 @@ class ReceiveHandler(http.server.BaseHTTPRequestHandler):
                     received += len(chunk)
         except Exception as e:
             print(f"  Error receiving {fname}: {e}")
+            self.server.ls_reporter.emit(
+                "upload_error", session=session_id, name=fname, error=str(e),
+            )
             self._send_text(500, str(e))
             return
 
+        declared = meta.get("size", 0)
+        ok = received == declared
+        digest = _sha256_file(dest)
         print(f"  Saved: {dest} ({received} bytes)")
+        if not ok:
+            print(f"  WARNING: sender announced {declared} bytes, {received} landed")
         self._send_text(200, "OK")
+
+        entry = {
+            "name": fname, "path": dest, "bytes": received,
+            "declared_bytes": declared, "sha256": digest, "ok": ok,
+        }
+        self.server.ls_reporter.emit("file_saved", session=session_id, **entry)
 
         with self.server.ls_lock:
             self.server.ls_received_count += 1
-            if self.server.ls_received_count >= self.server.ls_expected_count:
+            self.server.ls_session_files.append(entry)
+            finished = self.server.ls_received_count >= self.server.ls_expected_count
+            if finished:
+                files = list(self.server.ls_session_files)
+                expected = self.server.ls_expected_count
+                sender = self.server.ls_session_sender
+                started = self.server.ls_session_started
+                declared_total = self.server.ls_declared_total
                 self.server.ls_session = None
                 self.server.ls_file_tokens = {}
                 self.server.ls_file_meta = {}
-                print(f"\nAll {self.server.ls_expected_count} file(s) received.")
+                self.server.ls_session_files = []
+
+        if finished:
+            total = sum(f["bytes"] for f in files)
+            all_ok = len(files) == expected and all(f["ok"] for f in files)
+            print(f"\nAll {expected} file(s) received.")
+            if not all_ok:
+                print("  WARNING: transfer incomplete or sizes did not match the manifest")
+            self.server.ls_reporter.session_end({
+                "session": session_id,
+                "sender": sender,
+                "address": self.client_address[0],
+                "save_dir": self.server.ls_save_dir,
+                "count": len(files),
+                "expected": expected,
+                "bytes": total,
+                "declared_bytes": declared_total,
+                "duration_s": round(time.time() - started, 3) if started else None,
+                "ok": all_ok,
+                "files": files,
+            })
 
 
 class ReceiveServer(http.server.HTTPServer):
@@ -646,7 +787,7 @@ class ReceiveServer(http.server.HTTPServer):
             pass
         super().server_bind()
 
-    def __init__(self, addr, handler, *, certfile, keyfile, alias, fingerprint, save_dir, auto_accept):
+    def __init__(self, addr, handler, *, certfile, keyfile, alias, fingerprint, save_dir, auto_accept, reporter=None):
         super().__init__(addr, handler)
         self.socket = _make_ssl_context_server(certfile, keyfile).wrap_socket(
             self.socket, server_side=True,
@@ -664,6 +805,11 @@ class ReceiveServer(http.server.HTTPServer):
         self.ls_file_meta = {}
         self.ls_received_count = 0
         self.ls_expected_count = 0
+        self.ls_session_started = None
+        self.ls_session_files = []
+        self.ls_session_sender = None
+        self.ls_declared_total = 0
+        self.ls_reporter = reporter or SessionReporter()
 
 
 def _run_multicast_listener(server, alias, fingerprint, listen_port=PORT):
@@ -715,6 +861,7 @@ def cmd_receive(args):
     alias = _get_alias(args)
     save_dir = os.path.expanduser(args.save_dir)
     auto_accept = args.yes
+    reporter = SessionReporter(event_log=args.event_log, on_complete=args.on_complete)
 
     # Try the standard port first, fall back to alternatives if in use
     listen_port = PORT
@@ -726,6 +873,7 @@ def cmd_receive(args):
                 certfile=certfile, keyfile=keyfile,
                 alias=alias, fingerprint=fingerprint,
                 save_dir=save_dir, auto_accept=auto_accept,
+                reporter=reporter,
             )
             listen_port = try_port
             break
@@ -747,6 +895,10 @@ def cmd_receive(args):
     print(f"Listening on https://{local_ip}:{listen_port}")
     print(f"Alias: {alias}")
     print(f"Saving files to: {save_dir}")
+    if reporter.event_log:
+        print(f"Event log: {os.path.abspath(reporter.event_log)}")
+    if reporter.on_complete:
+        print(f"Completion hook: {reporter.on_complete}")
     if auto_accept:
         print("Auto-accept mode: ON")
     print("Press Ctrl+C to stop.\n")
@@ -827,6 +979,11 @@ def main():
     p_recv = sub.add_parser("receive", help="Listen for incoming transfers")
     p_recv.add_argument("--save-dir", default="~/Downloads", help="Directory to save files (default: ~/Downloads)")
     p_recv.add_argument("-y", "--yes", action="store_true", help="Auto-accept incoming transfers")
+    p_recv.add_argument("--event-log", metavar="PATH",
+                        help="Append JSONL progress to PATH (session_start, file_saved, session_complete)")
+    p_recv.add_argument("--on-complete", metavar="CMD",
+                        help="Shell command to run after each transfer (env: LOCALSEND_OK, "
+                             "LOCALSEND_REPORT, LOCALSEND_SESSION, LOCALSEND_SAVE_DIR)")
 
     # discover
     p_disc = sub.add_parser("discover", help="List nearby LocalSend devices")
