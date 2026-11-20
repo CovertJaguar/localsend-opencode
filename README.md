@@ -1,8 +1,9 @@
 # localsend-opencode
 
-An OpenCode skill that wraps a [LocalSend](https://localsend.org) CLI, so an
-agent can move files to and from devices on the local network (or by IPv6)
-without a GUI.
+An agent skill that wraps a [LocalSend](https://localsend.org) CLI, so an agent
+can move files to and from devices on the local network (or by IPv6) without a
+GUI. Written for OpenCode, loads unchanged in Claude Code, and runs under any
+local CLI agent that can execute a Python script.
 
 The CLI itself is vendored as a git subtree at
 `skills/localsend/vendor/localsend-cli` from
