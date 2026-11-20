@@ -211,9 +211,16 @@ def _discover(alias, fingerprint, timeout=3.0, certfile=None, keyfile=None):
 # HTTP helpers
 # ---------------------------------------------------------------------------
 
-def _https_request(method, url, body=None, headers=None):
-    """Make an HTTPS request ignoring self-signed certs. Returns (status, body_bytes)."""
+def _https_request(method, url, body=None, headers=None, cert=None):
+    """Make an HTTPS request ignoring self-signed certs. Returns (status, body_bytes).
+
+    `cert` is an optional (certfile, keyfile) pair. LocalSend 2.1+ receivers
+    request a client certificate, and refuse the request with
+    TLSV13_ALERT_CERTIFICATE_REQUIRED if the sender has none to present.
+    """
     ctx = _make_ssl_context_client()
+    if cert:
+        ctx.load_cert_chain(certfile=cert[0], keyfile=cert[1])
     req = urllib.request.Request(url, method=method)
     if headers:
         for k, v in headers.items():
@@ -231,7 +238,7 @@ def _https_request(method, url, body=None, headers=None):
         return e.code, e.read()
 
 
-def _upload_file(receiver_ip, receiver_port, session_id, file_id, token, filepath):
+def _upload_file(receiver_ip, receiver_port, session_id, file_id, token, filepath, cert=None):
     """Upload a single file to the receiver."""
     fname = os.path.basename(filepath)
     mime = mimetypes.guess_type(fname)[0] or "application/octet-stream"
@@ -242,6 +249,8 @@ def _upload_file(receiver_ip, receiver_port, session_id, file_id, token, filepat
         f"?sessionId={session_id}&fileId={file_id}&token={token}"
     )
     ctx = _make_ssl_context_client()
+    if cert:
+        ctx.load_cert_chain(certfile=cert[0], keyfile=cert[1])
     req = urllib.request.Request(url, method="POST")
     req.add_header("Content-Type", mime)
     req.add_header("Content-Length", str(size))
@@ -374,7 +383,8 @@ def cmd_send(args):
     }
 
     url = f"https://{target_ip}:{target_port}/api/localsend/v2/prepare-upload"
-    status, resp_body = _https_request("POST", url, body=prepare_body)
+    status, resp_body = _https_request("POST", url, body=prepare_body,
+                                       cert=(certfile, keyfile))
 
     if status == 204:
         print("Receiver indicated nothing to transfer.")
@@ -411,7 +421,8 @@ def cmd_send(args):
         size = os.path.getsize(filepath)
         print(f"  Uploading: {fname} ({size} bytes)...", end=" ", flush=True)
         try:
-            st = _upload_file(target_ip, target_port, session_id, fid, token, filepath)
+            st = _upload_file(target_ip, target_port, session_id, fid, token, filepath,
+                              cert=(certfile, keyfile))
             print("done." if st == 200 else f"HTTP {st}")
             uploaded += 1
         except Exception as e:

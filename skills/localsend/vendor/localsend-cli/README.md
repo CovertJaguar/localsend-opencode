@@ -135,7 +135,8 @@ behave the same on Windows, macOS and Linux.
 
 - Uses the [LocalSend v2 protocol](https://github.com/localsend/protocol)
 - Discovers devices via UDP multicast on `224.0.0.167:53317`
-- Transfers files over HTTPS with self-signed TLS certificates
+- Transfers files over HTTPS with self-signed TLS certificates, presenting a
+  client certificate when the receiver requests one (LocalSend 2.1+)
 - Zero dependencies beyond Python stdlib + `openssl`
 - Single-file script — no pip install needed
 
@@ -158,6 +159,7 @@ npx clawhub install localsend
 | Transfer declined (403) | Use `-y` flag on the receiver side |
 | Transfer hangs | Large file on slow WiFi — wait it out |
 | `openssl: command not found` | Install OpenSSL: `sudo apt install openssl` or `brew install openssl` |
+| `TLSV13_ALERT_CERTIFICATE_REQUIRED` | Receiver wants mutual TLS; update to a build that presents its client certificate |
 
 ## License
 
