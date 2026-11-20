@@ -66,6 +66,9 @@ process, do not ask the user to retry.
 State the exact destination when handing off: device alias, IP and port,
 protocol `https`, and where files will land.
 
+Whether the receiver stays up after the transfer is a judgement call, not a
+default: see Etiquette for the criteria and say which way you went.
+
 ## Wait for it to land
 
 Do not poll the save folder. A folder that stops changing looks the same
@@ -123,8 +126,20 @@ false positive, and the event log reports it as `ok: false`.
   upstream CLI repo you vendor from (ours:
   `CovertJaguar/localsend-cli`), then
   `git subtree pull --prefix skills/localsend/vendor/localsend-cli ...`.
-- Do not leave a receiver running with `-y` for longer than the transfer needs;
-  it accepts from anyone who can reach the port.
+- Decide from context whether the receiver should outlive the transfer, and say
+  which you chose in a sentence rather than asking. Stop it when the reason it
+  was started is satisfied and nothing points to another send: a one-shot
+  request whose file has landed, a batch the user called complete, the end of
+  the task, an unattended machine, or a network you do not trust. Keep it when
+  the user signals more is coming — they said so, they are iterating ("try
+  again", "now this one"), the announced manifest still has files outstanding,
+  or they are mid-test and the next send is minutes away. When the context is
+  genuinely ambiguous, close it after the current session: `-y` accepts from
+  anyone who can reach the port, and restarting costs one command, so the cheap
+  mistake is a closed receiver.
+- Stop the waiter with the receiver. A `wait-transfer.py` left behind holds no
+  port, but it lingers until its timeout and will report the next transfer the
+  receiver never saw.
 - When a transfer fails, report which layer failed: discovery, TLS connect,
   `/register`, `/prepare-upload`, or the upload body. Each has a different
   fix and the CLI's own messages usually do not say which.
