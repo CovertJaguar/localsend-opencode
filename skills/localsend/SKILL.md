@@ -8,8 +8,10 @@ description: Send or receive files over the LAN or by IPv6 with the vendored Loc
 Move files between this machine and any device running LocalSend (Android,
 iOS, Windows, macOS, Linux). The CLI is vendored at
 `vendor/localsend-cli/localsend-cli` — a single-file Python script, no install
-step. Read `references/ops-notes.md` before debugging a failed transfer; it
-lists the failure modes that produce no useful error.
+step. The skill directory loads unchanged in any host that reads `SKILL.md`
+(OpenCode, Claude Code); per-host install paths are in the repo README. Read
+`references/ops-notes.md` before debugging a failed transfer; it lists the
+failure modes that produce no useful error.
 
 ## Before anything
 
@@ -87,6 +89,10 @@ Run it in the background so its exit resumes you. It prints one line per file
 with the SHA-256, compares every saved size against the announced one, and
 exits `0` when all match, `2` when a file is short or missing (the classic
 zero-byte false positive), `124` on timeout.
+
+Hosts that do not resume an agent when a background process exits should read
+the event log on their next turn instead, or point `--on-complete` at a marker
+file or webhook. The records are the contract; the wake-up is host plumbing.
 
 For unattended machines, `--on-complete` takes any shell command —
 `notify-send`, `osascript -e 'display notification'`, `msg`, or a webhook. It
